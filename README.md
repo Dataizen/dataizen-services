@@ -17,5 +17,4 @@ Chacun est une œuvre originale Dataizen (licence MIT), déployé en image versi
 
 ## Licence
 
-MIT (voir [LICENSE](LICENSE)). Composants indépendants de CKAN (dialogue par API HTTP),
-donc libres de la licence de notre choix.
+MIT (voir [LICENSE](LICENSE)). 

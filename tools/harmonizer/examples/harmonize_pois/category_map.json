@@ -1,0 +1,50 @@
+{
+  "Casas de Fado": {
+    "schemaOrgRefs": [
+      "https://schema.org/Restaurant",
+      "https://schema.org/MusicVenue"
+    ],
+    "wikidataRef": "https://www.wikidata.org/entity/Q3338148"
+  },
+  "Fado houses": {
+    "schemaOrgRefs": [
+      "https://schema.org/Restaurant",
+      "https://schema.org/MusicVenue"
+    ],
+    "wikidataRef": "https://www.wikidata.org/entity/Q3338148"
+  },
+
+  "Museum": {
+    "schemaOrgRefs": ["https://schema.org/Museum"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q33506"
+  },
+  "Restaurant": {
+    "schemaOrgRefs": ["https://schema.org/Restaurant"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q11707"
+  },
+  "Park": {
+    "schemaOrgRefs": ["https://schema.org/Park"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q22698"
+  },
+  "Hotel": {
+    "schemaOrgRefs": ["https://schema.org/Hotel"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q27686"
+  },
+  "Beach": {
+    "schemaOrgRefs": ["https://schema.org/Beach"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q40080"
+  },
+
+  "Postos de Abastecimento": {
+    "schemaOrgRefs": ["https://schema.org/GasStation"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q205495"
+  },
+  "Petrol station": {
+    "schemaOrgRefs": ["https://schema.org/GasStation"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q205495"
+  },
+  "Gasolineras": {
+    "schemaOrgRefs": ["https://schema.org/GasStation"],
+    "wikidataRef": "https://www.wikidata.org/entity/Q205495"
+  }
+}

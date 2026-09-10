@@ -1,0 +1,28 @@
+stages:
+  - test
+
+# Compile the three example .dolfin files, then run the three pipelines,
+# using nothing but the Python standard library.
+test:
+  stage: test
+  image: python:3.11-slim
+  script:
+    - echo "→ unit tests (stdlib unittest, offline) : adaptateur générique + writers + validation format/schéma"
+    - python3 -m unittest discover -s tests -v
+    - echo "→ compile all three .dolfin files"
+    - python3 dolfin2model.py examples/trees.dolfin /tmp/trees_gen.py
+    - python3 dolfin2model.py examples/pois.dolfin /tmp/pois_gen.py
+    - python3 dolfin2model.py examples/traffic.dolfin /tmp/traffic_gen.py
+
+    - echo "→ run the three harmonizers (no GBIF, offline-safe)"
+    - cd examples
+    - python3 -m harmonize --adapter porto --input inputs/uc1-trees-porto.geojson --output outputs/trees.jsonld --geojson outputs/trees.geojson --base-id "http://example.org/trees/" --no-gbif
+    - python3 -m harmonize_pois --adapter porto_pois --input inputs/uc2-pois-casas-de-fado.csv --output outputs/pois.jsonld --geojson outputs/pois.geojson --base-id "http://example.org/pois/"
+    - python3 -m harmonize_traffic --adapter tomtom --input inputs/uc4-traffic-tomtom.csv --output outputs/traffic.jsonld --datex2 outputs/traffic.datex2.xml --geojson outputs/traffic.geojson --base-id "http://example.org/traffic/"
+
+    - echo "→ verify outputs exist"
+    - ls -la outputs/
+    - test -s outputs/trees.jsonld
+    - test -s outputs/pois.jsonld
+    - test -s outputs/traffic.jsonld
+    - test -s outputs/traffic.datex2.xml

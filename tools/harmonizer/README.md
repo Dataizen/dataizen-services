@@ -1,0 +1,161 @@
+# pivot-harmonizer
+
+**One canonical pivot, N adapters in, M writers out.**
+
+A reusable method and toolkit for harmonizing heterogeneous datasets
+against one or more open standards, without losing semantic content
+and without maintaining N × M mapping tables.
+
+Developed by team LESL (Kereval · Dolfin · Askem) during the
+**MIMathon Porto 2026**, validated on three open-data use cases
+(classified trees, points of interest, city traffic). MIT license.
+
+Live pages, full method, references: **[askem.eu/mimathon](https://askem.eu/mimathon/)**
+
+## What is here
+
+```
+pivot-harmonizer/
+├── SKILL.md              the 10-step method, full write-up
+├── dolfin2model.py       compiler: .dolfin  →  Python @dataclass model.py
+├── template/             starter kit, copy to scaffold a new domain
+├── examples/             three worked, runnable reference implementations
+│   ├── trees.dolfin      + harmonize/ (UC1, GBIF taxonomy binding)
+│   ├── pois.dolfin       + harmonize_pois/ (UC2, schema.org + Wikidata)
+│   └── traffic.dolfin    + harmonize_traffic/ (UC4, JSON-LD + DATEX II)
+├── docs/
+│   ├── pattern.md            the pattern in one diagram
+│   ├── writing-a-dolfin.md   how to design your canonical model
+│   └── standards-alignment.md what to know about SDM, DATEX II, schema.org, GBIF, ...
+└── claude/               AI-assisted onboarding workflow
+```
+
+## Requirements
+
+Python 3.10 or later. **No external dependencies.** Everything uses the
+Python standard library. Internet access is only needed if you want the
+optional GBIF resolver (trees example).
+
+## Two ways to use this repo
+
+### Mode A · AI-assisted (fastest)
+
+Open the repo in an AI coding assistant (Claude Code, Cursor, or any
+tool that can read local files). Point it at `SKILL.md` and one of the
+`examples/`. Then:
+
+1.  **Describe your data to the assistant.** Show it a source file. Ask
+    for an audit (record count, distinct values, spelling variants,
+    format quirks) and a standards benchmark.
+2.  **Iterate on the `.dolfin` model** with the assistant. This is your
+    canonical model, human-readable, editable by the domain experts.
+3.  **Compile:** `python3 dolfin2model.py new.dolfin harmonize_new/model.py`.
+4.  **Scaffold:** `cp -R template/ harmonize_new/`, drop the compiled
+    `model.py` in.
+5.  **Write the adapter** with the assistant, using one of the
+    `examples/` adapter as reference.
+6.  **Run:** `python3 -m harmonize_new --adapter <src> --input ... --output ...`
+
+See `claude/README.md` for a step-by-step handoff prompt.
+
+### Mode B · Manual (no AI needed)
+
+```bash
+# 1. Start from the template
+cp -R template/ harmonize_yourdomain/
+mv harmonize_yourdomain/template.dolfin yourdomain.dolfin
+
+# 2. Write your Dolfin model
+$EDITOR yourdomain.dolfin
+# (see docs/writing-a-dolfin.md for guidance, and examples/*.dolfin for full worked models)
+
+# 3. Compile to Python dataclasses
+python3 dolfin2model.py yourdomain.dolfin harmonize_yourdomain/model.py
+
+# 4. Customise the writers: edit harmonize_yourdomain/jsonld.py CONTEXT
+$EDITOR harmonize_yourdomain/jsonld.py
+
+# 5. Write your first adapter, inspired by examples/harmonize_pois/adapters/porto_pois.py
+cp harmonize_yourdomain/adapters/_template.py harmonize_yourdomain/adapters/<source>.py
+$EDITOR harmonize_yourdomain/adapters/<source>.py
+
+# 6. Run
+python3 -m harmonize_yourdomain \
+    --adapter <source> \
+    --input path/to/your/file.csv \
+    --output out.jsonld \
+    --geojson out.geojson \
+    --base-id "http://your-namespace/entities/"
+```
+
+## Try the examples first
+
+```bash
+cd examples
+./run-all.sh
+ls outputs/
+```
+
+You should see nine files land in `outputs/`, produced from three
+different source formats by three parallel pipelines. Open a
+`.jsonld` file, or drop `outputs/trees-canonical.geojson` in
+[geojson.io](https://geojson.io/).
+
+## The pattern in one diagram
+
+```
+        source A       source B       source C
+           │              │              │
+        adapter A      adapter B      adapter C
+           │              │              │
+           ▼              ▼              ▼
+        ┌──────────────────────────────────────┐
+        │ Canonical model (Dolfin pivot)       │
+        │ + typed sub-entities                 │
+        │ + external IRI references            │
+        │ + closed enums                       │
+        └──────────────────────────────────────┘
+           │              │              │
+        writer 1       writer 2       writer 3
+           │              │              │
+           ▼              ▼              ▼
+        SDM JSON-LD    DATEX II      GeoJSON
+        consumer       consumer       consumer
+```
+
+**N + M files instead of N × M mappings.** New source: one new adapter.
+New consumer: one new writer. The pivot stays small.
+
+## Roles at a glance
+
+- **`.dolfin`** = the canonical model, **human-readable**. Edited
+  during design meetings, versioned like source code.
+- **`model.py`** = the machine-executable mirror. Generated by
+  `dolfin2model.py`. Don't edit by hand.
+- **Adapters** (`adapters/<source>.py`) = parse the messy real source,
+  yield canonical instances. Source-specific normalisation lives here.
+- **Writers** (`jsonld.py`, `geojson_out.py`, `datex2.py`, ...) =
+  render canonical instances to a target format. Never touch source data.
+- **`transforms.py`** = portable text helpers (`clean_text`,
+  `extract_count`, `match_keywords`, `Registry`). Copy across projects
+  unchanged.
+
+## Reference
+
+- **[SKILL.md](SKILL.md)** — the 10-step method, full write-up.
+- **[docs/pattern.md](docs/pattern.md)** — the pattern illustrated.
+- **[docs/writing-a-dolfin.md](docs/writing-a-dolfin.md)** — designing your canonical model.
+- **[docs/standards-alignment.md](docs/standards-alignment.md)** — Smart Data Models, DATEX II, schema.org, GBIF, Wikidata.
+- **Live pages and downloads:** [askem.eu/mimathon](https://askem.eu/mimathon/).
+
+## Credits
+
+Team LESL:
+
+- **Lea** and **Eliott**, [Kereval](https://www.kereval.com) — software quality and interoperability validation.
+- **Sattisvar**, [Dolfin](https://dolfin.fr) — the ontology language, the canonical-pivot tooling.
+- **Louis**, [Askem](https://askem.eu) — method design and delivery.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

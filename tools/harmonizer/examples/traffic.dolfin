@@ -1,0 +1,26 @@
+package <http://mimathon.askem.eu/uc4/traffic>:
+  dolfin_version "1"
+  version "0.1.0"
+  author "LESL (Lea, Eliott, Sattisvar & Louis), Dolfin & Askem"
+  description "Canonical model for city-wide traffic observations, MIMathon Porto 2026 use case 04. Aggregated KPIs designed for dual-format output: Smart Data Models JSON-LD and DATEX II XML, from one authoritative pivot."
+
+concept City:
+  has name: one string
+  has countryCode: one string
+  has latitude: optional float
+  has longitude: optional float
+
+concept TrafficObservation:
+  has localId: one string
+  has city: one City
+  has observedAt: one string
+  has trafficIndex: optional float
+  has trafficIndexWeekAgo: optional float
+  has observedAtWeekAgo: optional string
+  has jamsDelaySeconds: optional float
+  has jamsLengthKm: optional float
+  has jamsCount: optional int
+  has travelTimePer10kmMin: optional float
+  has historicTravelTimePer10kmMin: optional float
+  has delayMin: optional float
+  has source: optional string

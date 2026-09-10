@@ -1,0 +1,25 @@
+# Variables d'environnement (jamais versionnées)
+.env
+.env.local
+.env.*.local
+
+# Python
+*.pyc
+*.pyo
+__pycache__/
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# Node (si présent)
+node_modules/
+
+# macOS / éditeurs
+.DS_Store
+._*
+.idea/
+.vscode/
+
+# Logs et sorties
+*.log

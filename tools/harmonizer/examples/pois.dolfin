@@ -1,0 +1,51 @@
+package <http://mimathon.askem.eu/uc2/pois>:
+  dolfin_version "1"
+  version "0.1.0"
+  author "LESL (Lea, Eliott, Sattisvar & Louis), Dolfin & Askem"
+  description "Canonical model for points of interest, MIMathon Porto 2026 use case 02. Multilingual names and descriptions, schema.org category alignment, structured address and contact, ready to feed Smart Data Models PointOfInterest."
+
+concept Language:
+  one of:
+    pt
+    en
+    es
+    fr
+    de
+    it
+    other
+
+concept LocalizedText:
+  has lang: one Language
+  has value: one string
+
+concept Category:
+  has sourceLabel: one string
+  has schemaOrgRefs: at least 1 string
+  has wikidataRef: optional string
+
+concept PostalAddress:
+  has streetName: optional string
+  has streetNumber: optional string
+  has locality: optional string
+  has postalCode: optional string
+  has country: optional string
+
+concept ContactPoint:
+  has telephone: optional string
+  has email: optional string
+  has website: optional string
+
+concept Location:
+  has latitude: one float
+  has longitude: one float
+
+concept PointOfInterest:
+  has localId: one string
+  has names: at least 1 LocalizedText
+  has descriptions: LocalizedText
+  has category: one Category
+  has location: one Location
+  has address: optional PostalAddress
+  has contact: optional ContactPoint
+  has capacity: optional int
+  has costRating: optional int

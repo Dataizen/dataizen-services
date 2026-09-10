@@ -1,0 +1,55 @@
+package <http://mimathon.askem.eu/uc1/trees>:
+  dolfin_version "1"
+  version "0.2.0"
+  author "LESL (Lea, Eliott, Sattisvar & Louis), Dolfin & Askem"
+  description "Canonical model for urban trees, MIMathon Porto 2026 use case 01. Generic Tree entity with optional heritage classification, ready for Smart Data Models contribution under dataModel.ParksAndGardens."
+
+concept AgeRange:
+  one of:
+    Y21_30
+    Y31_40
+    Y41_50
+    Y51_60
+    Y61_70
+    Y71_80
+    Y81_100
+    Over100
+    Unknown
+
+concept ClassificationKind:
+  one of:
+    IsolatedSpecimen
+    TreeCluster
+
+concept Authority:
+  has name: one string
+  has acronym: one string
+
+concept Species:
+  has scientificName: one string
+  has commonName: optional string
+  has taxonRef: optional string
+
+concept LegalAct:
+  has reference: one string
+  has issuedOn: optional string
+
+concept Classification:
+  has kind: one ClassificationKind
+  has specimenCount: optional int
+  has authority: one Authority
+  has legalAct: one LegalAct
+  has classifiedOn: optional string
+
+concept Location:
+  has latitude: one float
+  has longitude: one float
+
+concept Tree:
+  has localId: one string
+  has species: one Species
+  has ageRange: optional AgeRange
+  has location: one Location
+  has classification: optional Classification
+  has refFlowerBed: optional string
+  has refGarden: optional string

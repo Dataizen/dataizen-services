@@ -1,0 +1,25 @@
+package <http://your-namespace/uc/name>:
+  dolfin_version "1"
+  version "0.1.0"
+  author "your team"
+  description "Canonical model for <your domain>. One-line rationale."
+
+# Closed sets become enums.
+concept Status:
+  one of:
+    Active
+    Inactive
+    Unknown
+
+# Real-world entities that several top-level records share become typed sub-entities.
+# Mark them frozen + with stable identity so Registry can dedupe spelling variants.
+concept SubEntity:
+  has name: one string
+  has refExt: optional string
+
+# Top-level entity. Add fields, references to sub-entities, optional attributes.
+concept Entity:
+  has localId: one string
+  has subEntity: one SubEntity
+  has status: optional Status
+  has refOptional: optional string

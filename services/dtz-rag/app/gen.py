@@ -265,8 +265,16 @@ async def generate_metadata(columns, sample, filename, fields):
                           f"{json.dumps(f['options'], ensure_ascii=False)} ou null")
         else:
             lignes.append(f"- {f['key']} ({f.get('label')}) : texte court ou null")
-    sysp = ("Tu es un expert en métadonnées de données ouvertes (DCAT). À partir du nom de "
-            "fichier, des colonnes et d'un échantillon, propose des métadonnées de qualité. "
+    sysp = ("Tu es un expert en métadonnées de données ouvertes (DCAT-AP FR). À partir du nom "
+            "de fichier, des colonnes et d'un échantillon, propose des métadonnées de qualité, "
+            "en soignant les champs utiles au moissonnage DCAT :\n"
+            "- couverture_temporelle : déduis l'année ou la période (ex. « 2025 » ou "
+            "« 2018-2024 ») des colonnes de date/année ou des millésimes visibles ;\n"
+            "- couverture_spatiale et territoires : déduis le territoire des colonnes "
+            "géographiques (code INSEE/commune, département, EPCI, région) ; pour territoires, "
+            "donne les CODES de département (2 ou 3 caractères, séparés par des espaces, ex. "
+            "« 21 58 71 ») ;\n"
+            "- theme et frequence : choisis STRICTEMENT dans les listes fournies.\n"
             "Réponds UNIQUEMENT par un objet JSON valide, sans texte. Clés : \"titre\" (str, "
             "explicite et lisible), \"description\" (str, 2 à 3 phrases : contenu, maille, "
             "source probable), \"tags\" (liste de 3 à 8 mots-clés courts en minuscules), et "

@@ -222,15 +222,23 @@ async def generate_chart(instance, dataset, intent=""):
 # Schéma de métadonnées par défaut (miroir de lib/metadata.js du portail), utilisé
 # quand l'appelant n'envoie pas son propre schéma (ex. côté CKAN). Le portail, lui,
 # transmet ses champs faisant autorité.
-_THEMES = [
-    'Administration et action publique', 'Agriculture',
-    'Aménagement du territoire et urbanisme', 'Biodiversité et eau',
-    'Citoyenneté et démocratie', 'Climat, air et énergie',
-    'Culture, patrimoine et tourisme', 'Economie et entreprises',
-    'Equipements, bâtiments et logements', 'Formation, éducation et emploi',
-    'Mobilité et transports', 'Nuisances, déchets et risques',
-    'Occupation des sols', 'Social, santé et sports',
-]
+# Thèmes = vocabulaire EU data-theme (DCAT-AP) : la valeur stockée est le CODE.
+_THEME_LABELS = {
+    'AGRI': 'Agriculture, pêche, sylviculture et alimentation',
+    'ECON': 'Économie et finances',
+    'EDUC': 'Éducation, culture et sport',
+    'ENER': 'Énergie',
+    'ENVI': 'Environnement',
+    'GOVE': 'Gouvernement et secteur public',
+    'HEAL': 'Santé',
+    'INTR': 'Questions internationales',
+    'JUST': 'Justice, système juridique et sécurité publique',
+    'REGI': 'Régions et villes',
+    'SOCI': 'Population et société',
+    'TECH': 'Science et technologie',
+    'TRAN': 'Transports',
+}
+_THEMES = list(_THEME_LABELS.keys())
 _FREQ = ['Ponctuelle', 'Temps réel', 'Quotidienne', 'Hebdomadaire', 'Mensuelle',
          'Trimestrielle', 'Semestrielle', 'Annuelle', 'Pluriannuelle', 'Inconnue']
 DEFAULT_META_FIELDS = [
@@ -261,8 +269,15 @@ async def generate_metadata(columns, sample, filename, fields):
     lignes = []
     for f in fields or []:
         if f.get("type") == "select" and f.get("options"):
-            lignes.append(f"- {f['key']} ({f.get('label')}) : une valeur parmi "
-                          f"{json.dumps(f['options'], ensure_ascii=False)} ou null")
+            if f.get("key") == "theme":
+                # options = codes EU data-theme : on présente code + libellé, l'IA renvoie le CODE
+                pairs = [f"{c} ({_THEME_LABELS.get(c, c)})" for c in f["options"]]
+                lignes.append(f"- theme ({f.get('label')}) : le CODE parmi "
+                              f"{json.dumps(pairs, ensure_ascii=False)} ; renvoie uniquement le "
+                              "code (ex. ENVI), ou null")
+            else:
+                lignes.append(f"- {f['key']} ({f.get('label')}) : une valeur parmi "
+                              f"{json.dumps(f['options'], ensure_ascii=False)} ou null")
         else:
             lignes.append(f"- {f['key']} ({f.get('label')}) : texte court ou null")
     sysp = ("Tu es un expert en métadonnées de données ouvertes (DCAT-AP FR). À partir du nom "

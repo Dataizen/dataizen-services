@@ -25,6 +25,7 @@ class Query(BaseModel):
     q: str
     scope: dict | None = None
     top_k: int = 8
+    lang: str | None = None  # langue de réponse de l'assistant (fr/pt/en) ; défaut fr
 
 
 @app.on_event("startup")
@@ -530,20 +531,74 @@ async def search(query: Query):
                       "text": (h.get("payload") or {}).get("text")} for h in hits]}
 
 
-SYS = ("Tu es l'assistant du portail de données ouvertes Dataizen. Réponds en "
-       "français, de façon concise et factuelle, en t'appuyant UNIQUEMENT sur les "
-       "extraits fournis. Cite les sources par leur titre. Si l'information ne "
-       "figure pas dans les extraits, dis-le clairement sans inventer.")
+# L'assistant répond dans la langue de l'instance (fr/pt/en). La langue vient de la
+# requête (champ `lang`, ou `scope.lang`), passée par le portail (PORTAL_LANG) ; défaut fr.
+_ANSWER_L = {
+    "fr": {
+        "sys": ("Tu es l'assistant du portail de données ouvertes Dataizen. Réponds en "
+                "français, de façon concise et factuelle, en t'appuyant UNIQUEMENT sur les "
+                "extraits fournis. Cite les sources par leur titre. Si l'information ne "
+                "figure pas dans les extraits, dis-le clairement sans inventer."),
+        "empty": ("Je n'ai trouvé aucune donnée pertinente dans le catalogue pour cette "
+                  "question."),
+        "warming": ("L'IA démarre le GPU (première requête, 1 à 2 min). Réessayez dans une "
+                    "minute."),
+        "anchor": ("L'utilisateur consulte actuellement « {t} ». Réponds à sa question en te "
+                   "basant PRINCIPALEMENT sur les extraits de CET élément ci-dessous. N'affirme "
+                   "jamais que l'élément consulté serait un autre ; ne mentionne les autres "
+                   "extraits que s'ils sont directement pertinents."),
+        "elem": "élément consulté", "question": "Question", "extraits": "Extraits",
+        "extraits_elem": "Extraits de l'élément consulté",
+        "autres": "Autres extraits du catalogue (contexte)",
+    },
+    "pt": {
+        "sys": ("És o assistente do portal de dados abertos Dataizen. Responde em português, "
+                "de forma concisa e factual, apoiando-te UNICAMENTE nos excertos fornecidos. "
+                "Cita as fontes pelo seu título. Se a informação não constar dos excertos, "
+                "di-lo claramente sem inventar."),
+        "empty": "Não encontrei dados relevantes no catálogo para esta pergunta.",
+        "warming": ("A IA está a iniciar o GPU (primeiro pedido, 1 a 2 min). Tente novamente "
+                    "dentro de um minuto."),
+        "anchor": ("O utilizador está a consultar « {t} ». Responde à pergunta baseando-te "
+                   "PRINCIPALMENTE nos excertos DESTE elemento abaixo. Nunca afirmes que o "
+                   "elemento consultado é outro ; só menciona os outros excertos se forem "
+                   "diretamente pertinentes."),
+        "elem": "elemento consultado", "question": "Pergunta", "extraits": "Excertos",
+        "extraits_elem": "Excertos do elemento consultado",
+        "autres": "Outros excertos do catálogo (contexto)",
+    },
+    "en": {
+        "sys": ("You are the assistant of the Dataizen open data portal. Answer in English, "
+                "concisely and factually, relying ONLY on the provided extracts. Cite sources "
+                "by their title. If the information is not in the extracts, say so clearly "
+                "without making anything up."),
+        "empty": "I found no relevant data in the catalogue for this question.",
+        "warming": ("The AI is starting the GPU (first request, 1 to 2 min). Please try again "
+                    "in a minute."),
+        "anchor": ("The user is currently viewing « {t} ». Answer their question based "
+                   "PRIMARILY on the extracts of THIS item below. Never claim the viewed item "
+                   "is a different one ; only mention the other extracts if they are directly "
+                   "relevant."),
+        "elem": "viewed item", "question": "Question", "extraits": "Extracts",
+        "extraits_elem": "Extracts of the viewed item",
+        "autres": "Other catalogue extracts (context)",
+    },
+}
+
+
+def _answer_lang(query):
+    lang = (query.lang or (query.scope or {}).get("lang") or "fr")
+    return _ANSWER_L.get(str(lang).lower(), _ANSWER_L["fr"])
 
 
 @app.post("/answer")
 async def answer(query: Query):
+    L = _answer_lang(query)
     await usage.record_event("assistant", instance=(query.scope or {}).get("instance"),
                              detail=(query.q or "")[:120])
     hits = await _retrieve(query.q, query.scope, query.top_k)
     if not hits:
-        return {"answer": "Je n'ai trouvé aucune donnée pertinente dans le catalogue "
-                          "pour cette question.", "sources": []}
+        return {"answer": L["empty"], "sources": []}
     def fmt(hs, start=1):
         return "\n\n".join(
             f"[{i}] {(h.get('payload') or {}).get('title')} "
@@ -554,24 +609,21 @@ async def answer(query: Query):
     other_hits = [h for h in hits if not h.get("_focus")][:3]
     if focus_hits:
         # ancrage explicite : on nomme la page/jeu consulté et on base la réponse dessus
-        cur_title = (focus_hits[0].get("payload") or {}).get("title") or "élément consulté"
-        parts = [f"L'utilisateur consulte actuellement « {cur_title} ». Réponds à sa question "
-                 f"en te basant PRINCIPALEMENT sur les extraits de CET élément ci-dessous. "
-                 f"N'affirme jamais que l'élément consulté serait un autre ; ne mentionne les "
-                 f"autres extraits que s'ils sont directement pertinents.",
-                 f"\nQuestion : {query.q}",
-                 "\nExtraits de l'élément consulté :\n" + fmt(focus_hits)]
+        cur_title = (focus_hits[0].get("payload") or {}).get("title") or L["elem"]
+        parts = [L["anchor"].format(t=cur_title),
+                 f"\n{L['question']} : {query.q}",
+                 f"\n{L['extraits_elem']} :\n" + fmt(focus_hits)]
         if other_hits:
-            parts.append("\nAutres extraits du catalogue (contexte) :\n"
+            parts.append(f"\n{L['autres']} :\n"
                          + fmt(other_hits, start=len(focus_hits) + 1))
         user = "\n".join(parts)
     else:
-        user = f"Question : {query.q}\n\nExtraits :\n" + fmt(hits)
+        user = f"{L['question']} : {query.q}\n\n{L['extraits']} :\n" + fmt(hits)
     try:
-        ans = await llm.chat(SYS, user)
+        ans = await llm.chat(L["sys"], user)
     except llm.GpuWarming:
         return JSONResponse(status_code=503, content={
             "warming": True,
-            "message": "L'IA démarre le GPU (première requête, 1 à 2 min). Réessayez dans une minute.",
+            "message": L["warming"],
             "sources": _sources(hits)})
     return {"answer": ans, "sources": _sources(hits)}

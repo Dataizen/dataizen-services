@@ -583,6 +583,21 @@ _ANSWER_L = {
         "extraits_elem": "Extracts of the viewed item",
         "autres": "Other catalogue extracts (context)",
     },
+    "da": {
+        "sys": ("Du er assistenten på Dataizens open data-portal. Svar på dansk, kortfattet og "
+                "faktuelt, udelukkende baseret på de leverede uddrag. Angiv kilderne ved deres "
+                "titel. Hvis oplysningen ikke findes i uddragene, så sig det tydeligt uden at "
+                "finde på noget."),
+        "empty": "Jeg fandt ingen relevante data i kataloget til dette spørgsmål.",
+        "warming": ("AI'en starter GPU'en (første forespørgsel, 1 til 2 min.). Prøv igen om et "
+                    "øjeblik."),
+        "anchor": ("Brugeren ser i øjeblikket på « {t} ». Besvar spørgsmålet HOVEDSAGELIGT ud fra "
+                   "uddragene af DETTE element nedenfor. Påstå aldrig, at det viste element er et "
+                   "andet ; nævn kun de øvrige uddrag, hvis de er direkte relevante."),
+        "elem": "vist element", "question": "Spørgsmål", "extraits": "Uddrag",
+        "extraits_elem": "Uddrag af det viste element",
+        "autres": "Andre uddrag fra kataloget (kontekst)",
+    },
 }
 
 

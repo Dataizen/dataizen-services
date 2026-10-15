@@ -36,6 +36,51 @@ def _isnum(v):
         return False
 
 
+# Colonnes de géométrie / coordonnées : artefacts de la géométrisation ou des exports
+# (ODS, SHP…), PAS des mesures analytiques. Les tracer en graphique donne des axes
+# « geo_point_2d.lat / lon », « coordxet / coordyet », « *_centroid.* » inutilisables.
+_GEO_COL_SUBSTR = ("geo_point", "geo_shape", "the_geom", "geometry", "centroid",
+                   "wkt", "bbox")
+_GEO_COL_EXACT = {"geom", "lat", "lon", "lng", "latitude", "longitude", "x", "y",
+                  "coordx", "coordy", "coordxet", "coordyet", "coord_x", "coord_y",
+                  "xlambert", "ylambert", "x_l93", "y_l93", "shape_area", "shape_length",
+                  "shape__area", "shape__length"}
+# Formats de ressource porteurs de géométrie (rendus sur carte, pas en graphique).
+_GEO_FORMATS = {"geojson", "shp", "shapefile", "gpkg", "geopackage", "kml", "geoparquet"}
+
+
+def _is_geo_col(name):
+    n = (name or "").strip().lower()
+    if n in _GEO_COL_EXACT:
+        return True
+    if any(s in n for s in _GEO_COL_SUBSTR):
+        return True
+    # paires de coordonnées suffixées : « xxx.lat », « xxx.lon », « xxx_latitude »…
+    return bool(re.search(r"[._](lat|lon|lng|latitude|longitude|x|y)$", n))
+
+
+def _analytic_cols(cols):
+    """Colonnes exploitables en graphique : on retire la géométrie/les coordonnées."""
+    return [c for c in (cols or []) if not _is_geo_col(c)]
+
+
+def _geo_resource_id(pkg):
+    """Ressource porteuse de géométrie d'un jeu (pour une couche carte vectorielle) :
+    une ressource GeoJSON/SHP/GPKG… d'origine (rendue telle quelle ou via WFS), sinon
+    la ressource datastore si elle est géospatiale. None si le jeu n'a pas de géométrie."""
+    ress = [r for r in pkg.get("resources", []) if not r.get("harmonized_from")]
+    # 1) une vraie ressource géo (format vecteur) — rendue directement / via WFS
+    for r in ress:
+        if (r.get("format") or "").strip().lower() in _GEO_FORMATS:
+            return r["id"]
+    # 2) datastore géospatial (colonne geometry/WMS posée par la géométrisation)
+    for r in ress:
+        if r.get("datastore_active") and (r.get("wms_url") or r.get("wfs_url")
+                                          or r.get("is_geospatial")):
+            return r["id"]
+    return None
+
+
 async def _ckan(action, params):
     headers = {"Authorization": config.CKAN_TOKEN} if config.CKAN_TOKEN else {}
     async with httpx.AsyncClient(timeout=60) as cli:
@@ -177,6 +222,16 @@ async def generate_chart(instance, dataset, intent=""):
     if not res:
         raise ValueError("aucune ressource tabulaire (datastore) pour ce jeu")
     cols, sample = colinfo
+    # On écarte les colonnes de géométrie/coordonnées : les tracer en graphique donne des
+    # axes « geo_point_2d.lat/lon », « coordxet/coordyet »… inutilisables. Un jeu purement
+    # géographique (que de la géométrie) n'a PAS de graphique pertinent -> on le signale
+    # (l'appelant, ex. generate_page, fera une carte à la place).
+    acols = _analytic_cols(cols)
+    if not acols:
+        raise ValueError("jeu géographique sans colonne analytique : une carte convient, "
+                         "pas un graphique")
+    cols = acols
+    sample = [{k: v for k, v in rec.items() if not _is_geo_col(k)} for rec in sample]
 
     sysp = ("Tu es un expert en visualisation de données. On te donne les colonnes d'un jeu "
             "tabulaire et une intention. Propose la meilleure configuration de graphique. "
@@ -388,6 +443,63 @@ async def generate_map(instance, dataset, intent=""):
             "valeur_col": valeur_col, "code_col": code_col, "dataset": dataset}
 
 
+async def generate_geo_map(instance, dataset, intent=""):
+    """Crée une carte VECTORIELLE (couche `geojson`) pour un jeu géographique de
+    points/lignes/polygones qui n'est PAS joignable à un contour (donc pas de
+    choroplèthe). Affiche la géométrie du jeu telle quelle (comme la carte de fiche).
+    C'est la bonne visualisation d'un jeu géo sans colonne analytique."""
+    base = dict(config.directus_instances()).get(instance)
+    if not base:
+        raise ValueError(f"instance inconnue : {instance}")
+    pkg = await _ckan("package_show", {"id": dataset})
+    geo_rid = _geo_resource_id(pkg)
+    if not geo_rid:
+        raise ValueError("aucune ressource géométrique à cartographier dans ce jeu")
+    res = next((r for r in pkg.get("resources", [])
+                if r.get("datastore_active") and not r.get("harmonized_from")), None)
+    titre = pkg.get("title") or "Carte"
+    headers = {"Content-Type": "application/json"}
+    if config.DIRECTUS_TOKEN:
+        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
+    async with httpx.AsyncClient(timeout=60) as cli:
+        r = await cli.post(f"{base}/items/cartes", headers=headers,
+                           json={"titre": titre[:200], "status": "published"})
+        r.raise_for_status()
+        carte_id = (r.json().get("data") or {}).get("id")
+        await cli.post(f"{base}/items/carte_couches", headers=headers, json={
+            "carte": carte_id, "label": titre[:120], "type": "geojson",
+            "geojson_rid": geo_rid, "dataset": (res or {}).get("id"),
+            "visible": True, "activable": True})
+    log.info("carte vectorielle générée pour %s (instance %s) : id=%s, geo_rid=%s",
+             dataset, instance, carte_id, geo_rid)
+    return {"id": carte_id, "titre": titre, "dataset": dataset}
+
+
+async def _dataset_geo_kind(dataset):
+    """Renvoie (pkg, kind) où kind ∈ {'choro','vecteur','tabulaire'} :
+    - 'choro'    : joignable à un contour (commune/EPCI/dép/région) -> choroplèthe ;
+    - 'vecteur'  : géométrie propre (points/lignes/polygones) -> couche geojson ;
+    - 'tabulaire': ni l'un ni l'autre -> graphique."""
+    try:
+        pkg, res, colinfo = await _resource_and_columns(dataset)
+        if pkg is None:
+            pkg = await _ckan("package_show", {"id": dataset})
+        cols, sample = colinfo if colinfo else ([], [])
+        if res:
+            from . import territory
+            try:
+                terr = await territory.resolve(cols, sample)
+                if terr.get("linkable"):
+                    return pkg, "choro"
+            except Exception:
+                pass
+        if _geo_resource_id(pkg):
+            return pkg, "vecteur"
+        return pkg, "tabulaire"
+    except Exception:
+        return None, "tabulaire"
+
+
 async def generate_dashboard(instance, dataset, intent=""):
     """Propose un tableau de bord (un niveau territorial + une liste d'indicateurs) à
     partir des colonnes d'un jeu, et crée les items Directus tableaux_bord + tb_niveaux
@@ -504,20 +616,6 @@ async def _discover_datasets(description, limit=3):
     return out
 
 
-async def _dataset_is_geo(dataset):
-    """(pkg, joignable_à_un_contour) pour un jeu : sert à choisir carte vs graphique."""
-    try:
-        pkg, res, colinfo = await _resource_and_columns(dataset)
-        if not res:
-            return None, False
-        cols, sample = colinfo
-        from . import territory
-        terr = await territory.resolve(cols, sample)
-        return pkg, bool(terr.get("linkable"))
-    except Exception:
-        return None, False
-
-
 async def generate_page(instance, datasets=None, intent=""):
     """Génère une PAGE brouillon à partir d'UN OU PLUSIEURS jeux et/ou d'une description.
     - `datasets` (liste de slugs) : les jeux à mettre en page. Si vide, ils sont
@@ -580,7 +678,6 @@ async def generate_page(instance, datasets=None, intent=""):
     # déjà créés et on remonte le 503 (aucune page n'est créée). Les autres erreurs
     # (jeu non graphable, etc.) n'interrompent pas : ce composant est simplement omis.
     comps, created = [], []  # created : (collection, id) pour rollback GPU
-    first_geo = None
 
     async def _rollback():
         async with httpx.AsyncClient(timeout=30) as c:
@@ -592,24 +689,33 @@ async def generate_page(instance, datasets=None, intent=""):
 
     try:
         for d in datasets:
-            _, is_geo = await _dataset_is_geo(d)
-            if is_geo and first_geo is None:
-                first_geo = d
+            # Choix du bon composant selon la nature du jeu : choroplèthe (joignable à un
+            # contour), carte vectorielle (géométrie propre : points/lignes/polygones), ou
+            # graphique (jeu tabulaire). Un jeu géographique ne doit JAMAIS finir en
+            # graphique sur ses colonnes de coordonnées (graphes inutilisables).
+            _, kind = await _dataset_geo_kind(d)
             try:
-                cid = (await generate_chart(instance, d, intent))["id"]
-                comps.append(("graphique", cid)); created.append(("graphiques", cid))
+                if kind == "choro":
+                    cid = (await generate_map(instance, d, intent))["id"]
+                    comps.append(("carte", cid)); created.append(("cartes", cid))
+                elif kind == "vecteur":
+                    cid = (await generate_geo_map(instance, d, intent))["id"]
+                    comps.append(("carte", cid)); created.append(("cartes", cid))
+                else:
+                    cid = (await generate_chart(instance, d, intent))["id"]
+                    comps.append(("graphique", cid)); created.append(("graphiques", cid))
             except llm.GpuWarming:
                 raise
             except Exception as e:
-                log.info("page: graphique %s ignoré (%s)", d, e)
-        if first_geo:
-            try:
-                cid = (await generate_map(instance, first_geo, intent))["id"]
-                comps.append(("carte", cid)); created.append(("cartes", cid))
-            except llm.GpuWarming:
-                raise
-            except Exception as e:
-                log.info("page: carte de résumé %s ignorée (%s)", first_geo, e)
+                # choroplèthe impossible (ex. pas de colonne numérique) : repli carte vectorielle
+                if kind == "choro":
+                    try:
+                        cid = (await generate_geo_map(instance, d, intent))["id"]
+                        comps.append(("carte", cid)); created.append(("cartes", cid))
+                        continue
+                    except Exception:
+                        pass
+                log.info("page: composant pour %s ignoré (%s)", d, e)
     except llm.GpuWarming:
         await _rollback()
         raise

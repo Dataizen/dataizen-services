@@ -399,7 +399,9 @@ async def generate_map(body: GenChart, x_dtz_token: str = Header(default="")):
     if not ds:
         raise HTTPException(status_code=400, detail="aucun jeu fourni")
     try:
-        return await _batch(gen.generate_map, body.instance, ds, _intent_of(body))
+        # carte « intelligente » : choroplèthe si joignable à un contour, sinon
+        # carte vectorielle (points/lignes/polygones). Marche sur tout jeu géo.
+        return await _batch(gen.generate_map_or_geo, body.instance, ds, _intent_of(body))
     except llm.GpuWarming:
         raise HTTPException(status_code=503, detail="Le GPU démarre, réessayez dans une minute.")
 

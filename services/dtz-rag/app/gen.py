@@ -66,6 +66,24 @@ def _analytic_cols(cols):
     return [c for c in (cols or []) if not _is_geo_col(c)]
 
 
+# Colonnes d'identifiant / code / date : numériques mais PAS des mesures. Colorer une
+# choroplèthe par un code postal ou un code INSEE n'a aucun sens (dégradé illisible,
+# « paté »). On les écarte des valeurs cartographiables.
+_ID_COL_SUBSTR = ("code", "insee", "siren", "siret", "identif", "postal", "_id", "uuid",
+                  "annee", "année", "millesime", "millésime")
+_ID_COL_EXACT = {"id", "cp", "cog", "depcom", "com", "epci", "dep", "reg", "iris",
+                 "annee", "year", "date", "fid", "gid", "objectid", "oid", "insee_com"}
+
+
+def _is_id_col(name):
+    n = (name or "").strip().lower()
+    if n in _ID_COL_EXACT:
+        return True
+    if any(s in n for s in _ID_COL_SUBSTR):
+        return True
+    return n == "year" or n.endswith("_annee") or n.endswith("_year")
+
+
 def _geo_resource_id(pkg):
     """Ressource porteuse de géométrie d'un jeu (pour une couche carte vectorielle) :
     une ressource GeoJSON/SHP/GPKG… d'origine (rendue telle quelle ou via WFS), sinon
@@ -402,9 +420,12 @@ async def generate_map(instance, dataset, intent=""):
                          "(commune/EPCI/département/région) détectée dans ce jeu")
     code_col = terr["code_col"]
 
-    # choix de la valeur à colorer : l'IA propose, repli = 1re colonne numérique
+    # choix de la valeur à colorer : l'IA propose, repli = 1re colonne numérique.
+    # On ne garde que de vraies MESURES : pas la géométrie, pas les identifiants/codes
+    # (un code postal/INSEE colorerait les communes n'importe comment).
     row0 = sample[0] if sample else {}
-    numeric = [c for c in cols if c != code_col and _isnum(row0.get(c))]
+    numeric = [c for c in cols if c != code_col and _isnum(row0.get(c))
+               and not _is_geo_col(c) and not _is_id_col(c)]
     valeur_col, titre = (numeric[0] if numeric else ""), pkg.get("title") or "Carte"
     try:
         raw = await llm.chat(
@@ -477,6 +498,22 @@ async def generate_geo_map(instance, dataset, intent=""):
     log.info("carte vectorielle générée pour %s (instance %s) : id=%s, geo_rid=%s",
              dataset, instance, carte_id, geo_rid)
     return {"id": carte_id, "titre": titre, "dataset": dataset}
+
+
+async def generate_map_or_geo(instance, dataset, intent=""):
+    """Carte « intelligente » : choroplèthe si le jeu est joignable à un contour
+    (commune/EPCI/dép/région + valeur numérique), sinon carte vectorielle (points/
+    lignes/polygones). C'est ce qu'utilise le bouton « Générer une carte (IA) » pour
+    qu'il produise une carte pertinente sur TOUT jeu géographique, pas seulement les
+    jeux choroplèthables."""
+    try:
+        return await generate_map(instance, dataset, intent)
+    except llm.GpuWarming:
+        raise
+    except Exception as e:
+        log.info("carte choroplèthe impossible pour %s (%s), repli carte vectorielle",
+                 dataset, str(e)[:120])
+        return await generate_geo_map(instance, dataset, intent)
 
 
 async def _dataset_geo_kind(dataset):

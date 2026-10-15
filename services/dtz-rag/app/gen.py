@@ -23,6 +23,8 @@ def _slugify(s):
 
 CHART_TYPES = ["bar", "line", "area", "pie", "gauge", "scatter"]
 AGG = ["none", "sum", "avg", "count"]
+# Couleur par défaut des couches carto générées (hex AVEC #, sinon MapLibre casse).
+MAP_COLOR = "#2f5496"
 
 
 def _isnum(v):
@@ -436,7 +438,7 @@ async def generate_map(instance, dataset, intent=""):
             "carte": carte_id, "label": f"{terr['niveau_label']} — {valeur_col}"[:120],
             "type": "choroplethe", "dataset": res["id"], "geojson_rid": terr["contour_rid"],
             "code_col": code_col, "geo_code_col": terr["geo_code_col"],
-            "valeur_col": valeur_col, "visible": True, "activable": True})
+            "couleur": MAP_COLOR, "valeur_col": valeur_col, "visible": True, "activable": True})
     log.info("carte choroplèthe générée pour %s (instance %s) : id=%s, niveau=%s, valeur=%s",
              dataset, instance, carte_id, terr["level"], valeur_col)
     return {"id": carte_id, "titre": titre, "niveau": terr["level"],
@@ -469,7 +471,9 @@ async def generate_geo_map(instance, dataset, intent=""):
         await cli.post(f"{base}/items/carte_couches", headers=headers, json={
             "carte": carte_id, "label": titre[:120], "type": "geojson",
             "geojson_rid": geo_rid, "dataset": (res or {}).get("id"),
-            "visible": True, "activable": True})
+            # couleur OBLIGATOIRE (hex avec #) : une couche vectorielle sans couleur
+            # casse le rendu MapLibre (circle-color null) -> couche invisible.
+            "couleur": MAP_COLOR, "visible": True, "activable": True})
     log.info("carte vectorielle générée pour %s (instance %s) : id=%s, geo_rid=%s",
              dataset, instance, carte_id, geo_rid)
     return {"id": carte_id, "titre": titre, "dataset": dataset}

@@ -60,6 +60,23 @@ def _metadata_text(pkg):
     fmts = sorted({(r.get("format") or "").upper() for r in pkg.get("resources", []) if r.get("format")})
     if fmts:
         lines.append("Formats disponibles : " + ", ".join(fmts))
+    # Harmonisation DOLFIN : si le jeu a des sorties harmonisées (ressources dérivées
+    # harmonized_from) ou un profil DOLFIN, on EXPLIQUE la notion dans le texte indexé,
+    # pour que l'assistant puisse répondre à « que veut dire harmonisé ? » (sinon le
+    # concept n'est nulle part dans le corpus et il répond qu'il ne sait pas).
+    harmonized = any(r.get("harmonized_from") for r in pkg.get("resources", [])) \
+        or bool(ex.get("dolfin_profile"))
+    if harmonized:
+        prof = ex.get("dolfin_profile")
+        lines.append(
+            "Données harmonisées (DOLFIN)" + (f" — profil « {prof} »" if prof else "") + " : "
+            "en plus des données d'origine, ce jeu dispose de sorties « harmonisées », "
+            "c'est-à-dire réécrites selon un modèle pivot standardisé (DOLFIN). Harmoniser "
+            "signifie aligner les données sur un vocabulaire commun (mêmes types d'entités, "
+            "mêmes noms de propriétés, mêmes identifiants et unités) pour qu'elles soient "
+            "comparables et combinables entre jeux, producteurs et territoires, et réutilisables "
+            "par des applications. Les sorties harmonisées sont fournies en formats "
+            "interopérables (NGSI-LD / JSON-LD, CSV, GeoJSON).")
     return "\n".join(lines)
 
 

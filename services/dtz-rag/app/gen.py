@@ -270,20 +270,22 @@ async def cms_create_graphique(instance, item):
         return (d.get("data") or d.get("doc") or {}).get("id")
 
 
-async def cms_create_carte(instance, titre, couches):
-    """Crée une carte + ses couches. `couches` = liste de dicts SANS clé parent."""
+async def cms_create_carte(instance, titre, couches, carte_extra=None):
+    """Crée une carte + ses couches. `couches` = liste de dicts SANS clé parent.
+    `carte_extra` : champs carte additionnels (ex. pilote_territoire)."""
     kind, base, h = _cms(instance)
+    extra = carte_extra or {}
     async with httpx.AsyncClient(timeout=60) as cli:
         if kind == "directus":
             r = await cli.post(f"{base}/items/cartes", headers=h,
-                               json={"titre": titre[:200], "status": "published"})
+                               json={"titre": titre[:200], "status": "published", **extra})
             r.raise_for_status()
             cid = (r.json().get("data") or {}).get("id")
             for c in couches:
                 await cli.post(f"{base}/items/carte_couches", headers=h, json={**c, "carte": cid})
             return cid
         r = await cli.post(f"{base}/api/cartes", headers=h,
-                           json={"titre": titre[:200], "couches": couches, "_status": "published"})
+                           json={"titre": titre[:200], "couches": couches, "_status": "published", **extra})
         r.raise_for_status()
         return (r.json().get("doc") or {}).get("id")
 
@@ -315,14 +317,14 @@ async def cms_create_page(instance, titre, slug_base, blocs, prompt_ia=""):
             r.raise_for_status()
             page_id = (r.json().get("data") or {}).get("id")
             for i, b in enumerate(blocs):
-                body = {**b, "page": page_id, "sort": i + 1, "status": "published", "largeur": "pleine"}
+                body = {"largeur": "pleine", **b, "page": page_id, "sort": i + 1, "status": "published"}
                 rb = await cli.post(f"{base}/items/page_blocs", headers=h, json=body)
                 rb.raise_for_status()
             return page_id, slug
         # Payload : layout en blocks (blockType), carte/graphique = ids de relation.
         layout = []
         for b in blocs:
-            blk = {"blockType": b["type"], "titre": b.get("titre") or "", "largeur": "pleine"}
+            blk = {"blockType": b["type"], "titre": b.get("titre") or "", "largeur": b.get("largeur") or "pleine"}
             if b.get("texte") is not None:
                 blk["texte"] = b.get("texte")
             if b.get("carte") is not None:
@@ -336,6 +338,28 @@ async def cms_create_page(instance, titre, slug_base, blocs, prompt_ia=""):
                            json={"title": titre, "slug": slug, "layout": layout, "_status": "draft"})
         r.raise_for_status()
         return (r.json().get("doc") or {}).get("id"), slug
+
+
+async def cms_create_dashboard(instance, titre, niveaux, indicateurs):
+    """Crée un tableau de bord + niveaux + indicateurs. `niveaux`/`indicateurs` = listes
+    de dicts SANS clé parent."""
+    kind, base, h = _cms(instance)
+    async with httpx.AsyncClient(timeout=60) as cli:
+        if kind == "directus":
+            r = await cli.post(f"{base}/items/tableaux_bord", headers=h,
+                               json={"titre": titre[:200], "status": "published"})
+            r.raise_for_status()
+            tb_id = (r.json().get("data") or {}).get("id")
+            for n in niveaux:
+                await cli.post(f"{base}/items/tb_niveaux", headers=h, json={**n, "tableau": tb_id})
+            for ind in indicateurs:
+                await cli.post(f"{base}/items/tb_indicateurs", headers=h, json={**ind, "tableau": tb_id})
+            return tb_id
+        r = await cli.post(f"{base}/api/tableaux_bord", headers=h,
+                           json={"titre": titre[:200], "niveaux": niveaux,
+                                 "indicateurs": indicateurs, "_status": "published"})
+        r.raise_for_status()
+        return (r.json().get("doc") or {}).get("id")
 
 
 async def generate_chart(instance, dataset, intent=""):
@@ -618,11 +642,8 @@ async def _dataset_geo_kind(dataset):
 
 async def generate_dashboard(instance, dataset, intent=""):
     """Propose un tableau de bord (un niveau territorial + une liste d'indicateurs) à
-    partir des colonnes d'un jeu, et crée les items Directus tableaux_bord + tb_niveaux
-    + tb_indicateurs (statut brouillon)."""
-    base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    partir des colonnes d'un jeu, et le crée dans le CMS (Directus ou Payload, brouillon)."""
+    _cms(instance)
     pkg, res, colinfo = await _resource_and_columns(dataset)
     if not res:
         raise ValueError("aucune ressource tabulaire (datastore) pour ce jeu")
@@ -680,24 +701,12 @@ async def generate_dashboard(instance, dataset, intent=""):
     if contour_rid and indics and not any(i["cartographiable"] for i in indics):
         indics[0]["cartographiable"] = True
 
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
-    async with httpx.AsyncClient(timeout=60) as cli:
-        r = await cli.post(f"{base}/items/tableaux_bord", headers=headers,
-                           json={"titre": (cfg.get("titre") or pkg.get("title") or "Tableau de bord")[:200],
-                                 "status": "published"})
-        r.raise_for_status()
-        tb_id = (r.json().get("data") or {}).get("id")
-        niveau = {"tableau": tb_id, "label": niveau_label[:80],
-                  "dataset": res["id"], "code_colonne": code_col}
-        if contour_rid:
-            niveau["contour"] = contour_rid  # liaison au contour de référence
-            niveau["geo_code_colonne"] = terr["geo_code_col"]  # colonne code côté GeoJSON
-        await cli.post(f"{base}/items/tb_niveaux", headers=headers, json=niveau)
-        for ind in indics:
-            await cli.post(f"{base}/items/tb_indicateurs", headers=headers,
-                           json={"tableau": tb_id, **ind})
+    niveau = {"label": niveau_label[:80], "dataset": res["id"], "code_colonne": code_col}
+    if contour_rid:
+        niveau["contour"] = contour_rid  # liaison au contour de référence
+        niveau["geo_code_colonne"] = terr["geo_code_col"]  # colonne code côté GeoJSON
+    tb_id = await cms_create_dashboard(
+        instance, (cfg.get("titre") or pkg.get("title") or "Tableau de bord"), [niveau], indics)
     log.info("tableau de bord généré pour %s (instance %s) : id=%s, %d indicateurs, niveau=%s, contour=%s",
              dataset, instance, tb_id, len(indics), terr["level"], bool(contour_rid))
     return {"id": tb_id, "titre": (cfg.get("titre") or pkg.get("title")),
@@ -912,9 +921,7 @@ async def generate_portrait(instance, dataset, intent="", target_level=None):
     agrège d'abord vers ce niveau (ressource dérivée) et on bâtit le portrait dessus.
     Réutilise le socle « filtres liés » : carte `pilote_territoire=true` -> bus -> graphiques
     réactifs. Tolérant au GPU en démarrage (repli déterministe)."""
-    base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    kind, _base, _headers = _cms(instance)
     pkg = await _ckan("package_show", {"id": dataset})
     _, res, colinfo = await _resource_and_columns(dataset)
     if not res:
@@ -986,99 +993,77 @@ async def generate_portrait(instance, dataset, intent="", target_level=None):
     if not indics:  # repli : premières colonnes numériques
         indics = [{"colonne": c, "libelle": c, "unite": ""} for c in numeric[:5]]
 
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
     created = []  # (collection, id) pour rollback en cas d'échec en cours
 
     async def _rollback():
+        try:
+            k, base, headers = _cms(instance)
+        except Exception:
+            return
         async with httpx.AsyncClient(timeout=30) as c:
             for coll, cid in reversed(created):
                 try:
-                    await c.delete(f"{base}/items/{coll}/{cid}", headers=headers)
+                    path = f"/items/{coll}/{cid}" if k == "directus" else f"/api/{coll}/{cid}"
+                    await c.delete(f"{base}{path}", headers=headers)
                 except Exception:
                     pass
 
     try:
-        async with httpx.AsyncClient(timeout=60) as cli:
-            # 0) Ressource dérivée (agrégation) : la référencer TOUT DE SUITE dans
-            # jeux_de_donnees, sinon la relation FK graphiques.dataset échoue (le miroir
-            # ne se synchronise que toutes les 3 min).
-            if agg_mirror:
-                arid, atitre = agg_mirror
-                chk = await cli.get(f"{base}/items/jeux_de_donnees/{arid}", headers=headers)
+        # 0) Ressource dérivée (agrégation) : la référencer dans jeux_de_donnees pour la
+        # relation FK Directus graphiques.dataset. Inutile sur Payload (dataset = texte, pas de FK).
+        if agg_mirror and kind == "directus":
+            arid, atitre = agg_mirror
+            async with httpx.AsyncClient(timeout=30) as cli:
+                chk = await cli.get(f"{_base}/items/jeux_de_donnees/{arid}", headers=_headers)
                 if chk.status_code != 200:
-                    await cli.post(f"{base}/items/jeux_de_donnees", headers=headers, json={
+                    await cli.post(f"{_base}/items/jeux_de_donnees", headers=_headers, json={
                         "rid": arid, "titre": atitre[:200], "dataset_titre": pkg.get("title") or dataset,
                         "dataset_slug": pkg.get("name") or dataset, "format": "CSV",
                         "geo": False, "datastore": True})
-            # 1) CARTE choroplèthe PILOTE de territoire (le clic diffuse la sélection).
-            rc = await cli.post(f"{base}/items/cartes", headers=headers,
-                                json={"titre": titre[:200], "status": "published",
-                                      "pilote_territoire": True})
-            rc.raise_for_status()
-            carte_id = (rc.json().get("data") or {}).get("id")
-            created.append(("cartes", carte_id))
-            await cli.post(f"{base}/items/carte_couches", headers=headers, json={
-                "carte": carte_id, "label": f"{terr['niveau_label']} — {carte_col}"[:120],
-                "type": "choroplethe", "dataset": rid, "geojson_rid": terr["contour_rid"],
-                "code_col": code_col, "geo_code_col": terr["geo_code_col"],
-                "valeur_col": carte_col, "visible": True, "activable": True})
-            # 2) JAUGES réactives (portée territoire) : une par indicateur clé.
-            graph_ids = []
-            for ind in indics:
-                vmax = await _col_max(rid, ind["colonne"])  # borne fixe (sinon auto-échelle)
-                g = {"titre": ind["libelle"][:200], "dataset": rid, "type": "gauge",
-                     "portee": "territoire", "colonne_y": ind["colonne"], "code_colonne": code_col,
-                     "unite": ind["unite"], "serie_temporelle": False, "agregation": "none",
-                     "colonnes": json.dumps([{"col": ind["colonne"], "label": ind["libelle"]}],
-                                            ensure_ascii=False),
-                     "status": "published"}
-                if vmax:
-                    g["valeur_max"] = vmax
-                rg = await cli.post(f"{base}/items/graphiques", headers=headers, json=g)
-                rg.raise_for_status()
-                gid = (rg.json().get("data") or {}).get("id")
-                graph_ids.append(gid)
-                created.append(("graphiques", gid))
-            # BARRE DE COMPARAISON (portée globale, non réactive) : top territoires sur
-            # l'indicateur cartographié, pour situer le territoire dans l'ensemble.
-            nom_col = "nom" if "nom" in cols else code_col
-            carte_lbl = next((i["libelle"] for i in indics if i["colonne"] == carte_col), carte_col)
-            rb = await cli.post(f"{base}/items/graphiques", headers=headers, json={
+        # 1) CARTE choroplèthe PILOTE de territoire (le clic diffuse la sélection).
+        carte_id = await cms_create_carte(instance, titre, [{
+            "label": f"{terr['niveau_label']} — {carte_col}"[:120],
+            "type": "choroplethe", "dataset": rid, "geojson_rid": terr["contour_rid"],
+            "code_col": code_col, "geo_code_col": terr["geo_code_col"],
+            "valeur_col": carte_col, "visible": True, "activable": True}], {"pilote_territoire": True})
+        created.append(("cartes", carte_id))
+        # 2) JAUGES réactives (portée territoire) : une par indicateur clé.
+        graph_ids = []
+        for ind in indics:
+            vmax = await _col_max(rid, ind["colonne"])  # borne fixe (sinon auto-échelle)
+            g = {"titre": ind["libelle"][:200], "dataset": rid, "type": "gauge",
+                 "portee": "territoire", "colonne_y": ind["colonne"], "code_colonne": code_col,
+                 "unite": ind["unite"], "serie_temporelle": False, "agregation": "none",
+                 "colonnes": json.dumps([{"col": ind["colonne"], "label": ind["libelle"]}],
+                                        ensure_ascii=False)}
+            if vmax:
+                g["valeur_max"] = vmax
+            gid = await cms_create_graphique(instance, g)
+            graph_ids.append(gid)
+            created.append(("graphiques", gid))
+        # BARRE DE COMPARAISON (portée globale, non réactive).
+        nom_col = "nom" if "nom" in cols else code_col
+        carte_lbl = next((i["libelle"] for i in indics if i["colonne"] == carte_col), carte_col)
+        bar_id = None
+        try:
+            bar_id = await cms_create_graphique(instance, {
                 "titre": f"Comparaison des territoires : {carte_lbl}"[:200], "dataset": rid,
                 "type": "bar", "portee": "global", "colonne_x": nom_col, "colonne_y": carte_col,
-                "agregation": "none", "tri": "value", "limite": 12, "status": "published"})
-            bar_id = (rb.json().get("data") or {}).get("id") if rb.status_code < 300 else None
-            if bar_id:
-                created.append(("graphiques", bar_id))
-            # 3) PAGE : intro + carte pilote (pleine) + jauges (tiers) + barre de comparaison.
-            slug = base_slug = _slugify(titre)
-            n = 1
-            while n <= 20:
-                chk = await cli.get(f"{base}/items/pages", headers=headers,
-                                    params={"filter[slug][_eq]": slug, "fields": "id", "limit": 1})
-                if chk.status_code == 200 and not (chk.json().get("data") or []):
-                    break
-                n += 1
-                slug = f"{base_slug}-{n}"
-            rp = await cli.post(f"{base}/items/pages", headers=headers,
-                                json={"title": titre, "slug": slug, "status": "draft",
-                                      "prompt_ia": (intent or "")[:2000]})
-            rp.raise_for_status()
-            page_id = (rp.json().get("data") or {}).get("id")
-            blocs = []
-            if intro:
-                blocs.append({"type": "texte", "titre": "", "texte": intro, "largeur": "pleine"})
-            blocs.append({"type": "carte", "titre": "", "carte": carte_id, "largeur": "pleine"})
-            for gid in graph_ids:
-                blocs.append({"type": "graphique", "titre": "", "graphique": gid, "largeur": "tiers"})
-            if bar_id:
-                blocs.append({"type": "graphique", "titre": "", "graphique": bar_id, "largeur": "pleine"})
-            for i, blk in enumerate(blocs):
-                blk.update({"page": page_id, "sort": i + 1, "status": "published"})
-                rb = await cli.post(f"{base}/items/page_blocs", headers=headers, json=blk)
-                rb.raise_for_status()
+                "agregation": "none", "tri": "value", "limite": 12})
+        except Exception:
+            bar_id = None
+        if bar_id:
+            created.append(("graphiques", bar_id))
+        # 3) PAGE : intro + carte pilote (pleine) + jauges (tiers) + barre de comparaison.
+        blocs = []
+        if intro:
+            blocs.append({"type": "texte", "titre": "", "texte": intro, "largeur": "pleine"})
+        blocs.append({"type": "carte", "titre": "", "carte": carte_id, "largeur": "pleine"})
+        for gid in graph_ids:
+            blocs.append({"type": "graphique", "titre": "", "graphique": gid, "largeur": "tiers"})
+        if bar_id:
+            blocs.append({"type": "graphique", "titre": "", "graphique": bar_id, "largeur": "pleine"})
+        page_id, slug = await cms_create_page(instance, titre, _slugify(titre), blocs, intent)
     except Exception:
         await _rollback()
         raise

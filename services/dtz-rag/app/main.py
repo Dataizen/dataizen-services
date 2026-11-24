@@ -246,9 +246,13 @@ async def usages_stamp(sync: int = 0, x_dtz_token: str = Header(default="")):
 async def reindex_cms(instance: str, x_dtz_token: str = Header(default="")):
     _check_webhook(x_dtz_token)
     base = dict(config.directus_instances()).get(instance)
+    kind = "directus"
+    if not base:
+        base = dict(config.payload_instances()).get(instance)
+        kind = "payload"
     if not base:
         raise HTTPException(status_code=404, detail="instance inconnue")
-    n = await cms_index.index_instance(instance, base)
+    n = await cms_index.index_instance(instance, base, kind)
     return {"instance": instance, "chunks": n}
 
 

@@ -37,6 +37,10 @@ CKAN_TOKEN = os.getenv("CKAN_TOKEN", "")
 DIRECTUS_INSTANCES = os.getenv("DIRECTUS_INSTANCES", "")
 # Token de service Directus (écriture : génération d'éléments IA type graphique).
 DIRECTUS_TOKEN = os.getenv("DIRECTUS_TOKEN", "")
+# CMS Payload : instances migrées vers Payload, "nom=url_interne", ex.
+# "atelier=http://payload-atelier:3000". Indexées via l'API REST Payload (contenu publié).
+# Une instance est dans DIRECTUS_INSTANCES OU PAYLOAD_INSTANCES, jamais les deux.
+PAYLOAD_INSTANCES = os.getenv("PAYLOAD_INSTANCES", "")
 
 # Postgres (suivi d'usage du GPU : sessions d'allumage + événements d'activité).
 # DSN complet, ex. postgresql://dataizen:<pw>@postgres:5432/dataizen. Vide = suivi off.
@@ -72,13 +76,22 @@ INDEX_MAX_ROWS = int(os.getenv("RAG_INDEX_MAX_ROWS", "5000"))
 SKIP_ROW_COLS = {"geometry", "the_geom", "_geom", "geom", "wkb_geometry"}
 
 
-def directus_instances():
-    """Renvoie [(nom, url), ...] à partir de DIRECTUS_INSTANCES."""
+def _parse_instances(raw):
     out = []
-    for part in DIRECTUS_INSTANCES.split(","):
+    for part in raw.split(","):
         part = part.strip()
         if not part or "=" not in part:
             continue
         name, url = part.split("=", 1)
         out.append((name.strip(), _clean(url.strip())))
     return out
+
+
+def directus_instances():
+    """Renvoie [(nom, url), ...] à partir de DIRECTUS_INSTANCES."""
+    return _parse_instances(DIRECTUS_INSTANCES)
+
+
+def payload_instances():
+    """Renvoie [(nom, url), ...] à partir de PAYLOAD_INSTANCES."""
+    return _parse_instances(PAYLOAD_INSTANCES)

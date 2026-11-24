@@ -96,8 +96,60 @@ async def _docs_for_instance(base, instance):
     return docs
 
 
-async def index_instance(instance, base):
-    docs = await _docs_for_instance(base, instance)
+async def _payload_items(base, path):
+    """GET d'une collection Payload (publié). base = http://payload-<inst>:3000."""
+    try:
+        async with httpx.AsyncClient(timeout=60) as cli:
+            r = await cli.get(f"{base}{path}")
+            r.raise_for_status()
+            return r.json().get("docs") or []
+    except Exception as e:
+        log.warning("Payload %s%s indisponible : %s", base, path, e)
+        return []
+
+
+async def _docs_for_instance_payload(base, instance):
+    """Comme _docs_for_instance mais depuis l'API Payload (instance migrée). Mêmes tuples."""
+    docs = []
+    portal = _portal(instance)
+    q = "?where[_status][equals]=published&limit=500&locale=fr&depth=0"
+
+    for p in await _payload_items(base, f"/api/pages?where[_status][equals]=published&limit=500&locale=fr&depth=2"):
+        parts = [p.get("title") or ""]
+        for b in (p.get("layout") or []):
+            parts += [b.get("titre") or "", parse.strip_html(b.get("texte"))]
+        text = "\n".join(x for x in parts if x).strip()
+        if text:
+            docs.append(("pages", p.get("id"), p.get("title") or p.get("slug"),
+                         f"{portal}/pages/{p.get('slug')}", p.get("updatedAt") or "", text))
+
+    for a in await _payload_items(base, f"/api/actualites{q}"):
+        text = "\n".join(x for x in [a.get("title"), a.get("chapo"),
+                                     parse.strip_html(a.get("content"))] if x)
+        if text:
+            docs.append(("actualites", a.get("id"), a.get("title"),
+                         f"{portal}/actualites/{a.get('id')}", a.get("updatedAt") or "", text))
+
+    for t in await _payload_items(base, f"/api/thematiques{q}"):
+        text = "\n".join(x for x in [t.get("title"), t.get("description")] if x)
+        if text:
+            docs.append(("thematiques", t.get("id"), t.get("title"), f"{portal}/", "", text))
+
+    for i in await _payload_items(base, f"/api/indicateurs{q}"):
+        text = " ".join(str(x) for x in [i.get("libelle"), i.get("valeur"),
+                                         i.get("unite"), i.get("source")] if x)
+        if text:
+            docs.append(("indicateurs", i.get("id"), i.get("libelle"), f"{portal}/", "", text))
+
+    for h in await _payload_items(base, f"/api/home_blocks{q}"):
+        text = "\n".join(x for x in [h.get("title"), parse.strip_html(h.get("content"))] if x)
+        if text:
+            docs.append(("home_blocks", h.get("id"), h.get("title"), f"{portal}/", "", text))
+    return docs
+
+
+async def index_instance(instance, base, kind="directus"):
+    docs = await (_docs_for_instance_payload if kind == "payload" else _docs_for_instance)(base, instance)
     must = [{"key": "source", "match": {"value": "cms"}},
             {"key": "instance", "match": {"value": instance}}]
     cibles = []
@@ -133,7 +185,12 @@ async def index_all():
     total = 0
     for name, base in config.directus_instances():
         try:
-            total += await index_instance(name, base)
+            total += await index_instance(name, base, "directus")
         except Exception as e:
             log.warning("échec indexation CMS %s : %s", name, e)
+    for name, base in config.payload_instances():
+        try:
+            total += await index_instance(name, base, "payload")
+        except Exception as e:
+            log.warning("échec indexation CMS Payload %s : %s", name, e)
     return total

@@ -234,10 +234,112 @@ async def generate_dolfin_model(dataset):
             "type_suggestion": _dolfin_main_concept(txt)}
 
 
-async def generate_chart(instance, dataset, intent=""):
+# --- Abstraction CMS : écriture Directus OU Payload selon l'instance ---------------
+# Les générateurs produisent le même contenu ; seule la forme d'écriture diffère
+# (Directus : carte + carte_couches / page + page_blocs ; Payload : couches en array /
+# layout en blocks). L'auth Payload passe par l'en-tête de service x-dtz-token.
+
+def _cms(instance):
+    """Renvoie (kind, base, headers) pour l'instance. kind = 'directus' | 'payload'."""
     base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    if base:
+        h = {"Content-Type": "application/json"}
+        if config.DIRECTUS_TOKEN:
+            h["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
+        return "directus", base, h
+    base = dict(config.payload_instances()).get(instance)
+    if base:
+        return "payload", base, {"Content-Type": "application/json", "x-dtz-token": config.WEBHOOK_TOKEN}
+    raise ValueError(f"instance inconnue : {instance}")
+
+
+def _st(kind, status):
+    """Clé de statut selon le CMS (Directus: status ; Payload: _status)."""
+    return {"status": status} if kind == "directus" else {"_status": status}
+
+
+async def cms_create_graphique(instance, item):
+    """Crée un graphique. `item` porte les champs (sans la clé de statut)."""
+    kind, base, h = _cms(instance)
+    body = {**item, **_st(kind, "published")}
+    path = "/items/graphiques" if kind == "directus" else "/api/graphiques"
+    async with httpx.AsyncClient(timeout=60) as cli:
+        r = await cli.post(f"{base}{path}", headers=h, json=body)
+        r.raise_for_status()
+        d = r.json()
+        return (d.get("data") or d.get("doc") or {}).get("id")
+
+
+async def cms_create_carte(instance, titre, couches):
+    """Crée une carte + ses couches. `couches` = liste de dicts SANS clé parent."""
+    kind, base, h = _cms(instance)
+    async with httpx.AsyncClient(timeout=60) as cli:
+        if kind == "directus":
+            r = await cli.post(f"{base}/items/cartes", headers=h,
+                               json={"titre": titre[:200], "status": "published"})
+            r.raise_for_status()
+            cid = (r.json().get("data") or {}).get("id")
+            for c in couches:
+                await cli.post(f"{base}/items/carte_couches", headers=h, json={**c, "carte": cid})
+            return cid
+        r = await cli.post(f"{base}/api/cartes", headers=h,
+                           json={"titre": titre[:200], "couches": couches, "_status": "published"})
+        r.raise_for_status()
+        return (r.json().get("doc") or {}).get("id")
+
+
+async def cms_create_page(instance, titre, slug_base, blocs, prompt_ia=""):
+    """Crée une page + ses blocs. `blocs` = liste de dicts {type, titre, texte|carte|
+    graphique|image|legende}. Résout un slug libre. Renvoie (page_id, slug)."""
+    kind, base, h = _cms(instance)
+    async with httpx.AsyncClient(timeout=60) as cli:
+        slug = slug_base
+        n = 1
+        while n <= 20:
+            if kind == "directus":
+                chk = await cli.get(f"{base}/items/pages", headers=h,
+                                    params={"filter[slug][_eq]": slug, "fields": "id", "limit": 1})
+                libre = chk.status_code == 200 and not (chk.json().get("data") or [])
+            else:
+                chk = await cli.get(f"{base}/api/pages",
+                                    params={"where[slug][equals]": slug, "limit": 1, "depth": 0})
+                libre = chk.status_code == 200 and not (chk.json().get("docs") or [])
+            if libre:
+                break
+            n += 1
+            slug = f"{slug_base}-{n}"
+        if kind == "directus":
+            r = await cli.post(f"{base}/items/pages", headers=h,
+                               json={"title": titre, "slug": slug, "status": "draft",
+                                     "prompt_ia": (prompt_ia or "")[:2000]})
+            r.raise_for_status()
+            page_id = (r.json().get("data") or {}).get("id")
+            for i, b in enumerate(blocs):
+                body = {**b, "page": page_id, "sort": i + 1, "status": "published", "largeur": "pleine"}
+                rb = await cli.post(f"{base}/items/page_blocs", headers=h, json=body)
+                rb.raise_for_status()
+            return page_id, slug
+        # Payload : layout en blocks (blockType), carte/graphique = ids de relation.
+        layout = []
+        for b in blocs:
+            blk = {"blockType": b["type"], "titre": b.get("titre") or "", "largeur": "pleine"}
+            if b.get("texte") is not None:
+                blk["texte"] = b.get("texte")
+            if b.get("carte") is not None:
+                blk["carte"] = b.get("carte")
+            if b.get("graphique") is not None:
+                blk["graphique"] = b.get("graphique")
+            if "legende" in b:
+                blk["legende"] = b.get("legende") or ""
+            layout.append(blk)
+        r = await cli.post(f"{base}/api/pages", headers=h,
+                           json={"title": titre, "slug": slug, "layout": layout, "_status": "draft"})
+        r.raise_for_status()
+        return (r.json().get("doc") or {}).get("id"), slug
+
+
+async def generate_chart(instance, dataset, intent=""):
+    _cms(instance)  # valide l'instance (Directus ou Payload)
     pkg, res, colinfo = await _resource_and_columns(dataset)
     if not res:
         raise ValueError("aucune ressource tabulaire (datastore) pour ce jeu")
@@ -280,17 +382,10 @@ async def generate_chart(instance, dataset, intent=""):
         "unite": (cfg.get("unite") or "")[:40],
         # publié : un graphique draft est invisible au public ET en aperçu (rôle public
         # du portail = published only). La page qui l'embarque reste, elle, en brouillon.
-        "status": "published",
     }
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
-    async with httpx.AsyncClient(timeout=60) as cli:
-        r = await cli.post(f"{base}/items/graphiques", headers=headers, json=item)
-        r.raise_for_status()
-        created = r.json().get("data") or {}
-    log.info("graphique généré pour %s (instance %s) : id=%s", dataset, instance, created.get("id"))
-    return {"id": created.get("id"), "titre": item["titre"], "type": item["type"],
+    created_id = await cms_create_graphique(instance, item)
+    log.info("graphique généré pour %s (instance %s) : id=%s", dataset, instance, created_id)
+    return {"id": created_id, "titre": item["titre"], "type": item["type"],
             "colonne_x": item["colonne_x"], "colonne_y": item["colonne_y"], "dataset": dataset}
 
 
@@ -404,11 +499,9 @@ DASH_AGG = ["sum", "wpop", "wmen", "wsup", "dens"]
 
 async def generate_map(instance, dataset, intent=""):
     """Crée une carte choroplèthe : détecte le niveau territorial du jeu, le lie au
-    contour de référence, et colore une valeur (colonne numérique). Écrit les items
-    Directus `cartes` + `carte_couches` (brouillon)."""
-    base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    contour de référence, et colore une valeur (colonne numérique). Écrit la carte +
+    ses couches dans le CMS (Directus ou Payload)."""
+    _cms(instance)
     pkg, res, colinfo = await _resource_and_columns(dataset)
     if not res:
         raise ValueError("aucune ressource tabulaire (datastore) pour ce jeu")
@@ -447,19 +540,11 @@ async def generate_map(instance, dataset, intent=""):
     if not valeur_col:
         raise ValueError("aucune colonne numérique à cartographier dans ce jeu")
 
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
-    async with httpx.AsyncClient(timeout=60) as cli:
-        r = await cli.post(f"{base}/items/cartes", headers=headers,
-                           json={"titre": titre[:200], "status": "published"})
-        r.raise_for_status()
-        carte_id = (r.json().get("data") or {}).get("id")
-        await cli.post(f"{base}/items/carte_couches", headers=headers, json={
-            "carte": carte_id, "label": f"{terr['niveau_label']} — {valeur_col}"[:120],
-            "type": "choroplethe", "dataset": res["id"], "geojson_rid": terr["contour_rid"],
-            "code_col": code_col, "geo_code_col": terr["geo_code_col"],
-            "couleur": MAP_COLOR, "valeur_col": valeur_col, "visible": True, "activable": True})
+    carte_id = await cms_create_carte(instance, titre, [{
+        "label": f"{terr['niveau_label']} — {valeur_col}"[:120],
+        "type": "choroplethe", "dataset": res["id"], "geojson_rid": terr["contour_rid"],
+        "code_col": code_col, "geo_code_col": terr["geo_code_col"],
+        "couleur": MAP_COLOR, "valeur_col": valeur_col, "visible": True, "activable": True}])
     log.info("carte choroplèthe générée pour %s (instance %s) : id=%s, niveau=%s, valeur=%s",
              dataset, instance, carte_id, terr["level"], valeur_col)
     return {"id": carte_id, "titre": titre, "niveau": terr["level"],
@@ -471,9 +556,7 @@ async def generate_geo_map(instance, dataset, intent=""):
     points/lignes/polygones qui n'est PAS joignable à un contour (donc pas de
     choroplèthe). Affiche la géométrie du jeu telle quelle (comme la carte de fiche).
     C'est la bonne visualisation d'un jeu géo sans colonne analytique."""
-    base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    _cms(instance)
     pkg = await _ckan("package_show", {"id": dataset})
     geo_rid = _geo_resource_id(pkg)
     if not geo_rid:
@@ -481,20 +564,12 @@ async def generate_geo_map(instance, dataset, intent=""):
     res = next((r for r in pkg.get("resources", [])
                 if r.get("datastore_active") and not r.get("harmonized_from")), None)
     titre = pkg.get("title") or "Carte"
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
-    async with httpx.AsyncClient(timeout=60) as cli:
-        r = await cli.post(f"{base}/items/cartes", headers=headers,
-                           json={"titre": titre[:200], "status": "published"})
-        r.raise_for_status()
-        carte_id = (r.json().get("data") or {}).get("id")
-        await cli.post(f"{base}/items/carte_couches", headers=headers, json={
-            "carte": carte_id, "label": titre[:120], "type": "geojson",
-            "geojson_rid": geo_rid, "dataset": (res or {}).get("id"),
-            # couleur OBLIGATOIRE (hex avec #) : une couche vectorielle sans couleur
-            # casse le rendu MapLibre (circle-color null) -> couche invisible.
-            "couleur": MAP_COLOR, "visible": True, "activable": True})
+    carte_id = await cms_create_carte(instance, titre, [{
+        "label": titre[:120], "type": "geojson",
+        "geojson_rid": geo_rid, "dataset": (res or {}).get("id"),
+        # couleur OBLIGATOIRE (hex avec #) : une couche vectorielle sans couleur
+        # casse le rendu MapLibre (circle-color null) -> couche invisible.
+        "couleur": MAP_COLOR, "visible": True, "activable": True}])
     log.info("carte vectorielle générée pour %s (instance %s) : id=%s, geo_rid=%s",
              dataset, instance, carte_id, geo_rid)
     return {"id": carte_id, "titre": titre, "dataset": dataset}
@@ -663,10 +738,9 @@ async def generate_page(instance, datasets=None, intent=""):
       DÉCOUVERTS depuis `intent` (description en langage naturel) via le RAG.
     - Pour chaque jeu : un bloc carte si le jeu est joignable à un contour, sinon un bloc
       graphique (réutilise les générateurs de composants). Plus un titre + une intro IA.
-    Crée la page `pages` (draft) et ses `page_blocs`. Tolérant aux composants qui échouent."""
-    base = dict(config.directus_instances()).get(instance)
-    if not base:
-        raise ValueError(f"instance inconnue : {instance}")
+    Crée la page (draft) et ses blocs dans le CMS (Directus ou Payload). Tolérant aux
+    composants qui échouent."""
+    _cms(instance)
     datasets = [d for d in (datasets or []) if d]
     discovered = False
     if not datasets:
@@ -709,10 +783,6 @@ async def generate_page(instance, datasets=None, intent=""):
     titre = (plan.get("titre") or (f"Analyse : {titres[0]}" if titres else "Nouvelle page"))[:200]
     intro = plan.get("intro") or intent or ""
 
-    headers = {"Content-Type": "application/json"}
-    if config.DIRECTUS_TOKEN:
-        headers["Authorization"] = f"Bearer {config.DIRECTUS_TOKEN}"
-
     # Composition : un GRAPHIQUE par jeu + UNE carte de résumé (1er jeu géolocalisé).
     # « Rien ou tout » : si le GPU redevient indisponible EN COURS de génération d'un
     # graphique, on ne laisse pas une page à moitié faite. On supprime les composants
@@ -721,10 +791,15 @@ async def generate_page(instance, datasets=None, intent=""):
     comps, created = [], []  # created : (collection, id) pour rollback GPU
 
     async def _rollback():
+        try:
+            kind, base, headers = _cms(instance)
+        except Exception:
+            return
         async with httpx.AsyncClient(timeout=30) as c:
             for coll, cid in created:
                 try:
-                    await c.delete(f"{base}/items/{coll}/{cid}", headers=headers)
+                    path = f"/items/{coll}/{cid}" if kind == "directus" else f"/api/{coll}/{cid}"
+                    await c.delete(f"{base}{path}", headers=headers)
                 except Exception:
                     pass
 
@@ -760,39 +835,19 @@ async def generate_page(instance, datasets=None, intent=""):
     except llm.GpuWarming:
         await _rollback()
         raise
-    async with httpx.AsyncClient(timeout=60) as cli:
-        slug = base_slug = _slugify(titre)
-        n = 1
-        while n <= 20:
-            chk = await cli.get(f"{base}/items/pages", headers=headers,
-                                params={"filter[slug][_eq]": slug, "fields": "id", "limit": 1})
-            if chk.status_code == 200 and not (chk.json().get("data") or []):
-                break
-            n += 1
-            slug = f"{base_slug}-{n}"
-        r = await cli.post(f"{base}/items/pages", headers=headers,
-                           json={"title": titre, "slug": slug, "status": "draft",
-                                 # on conserve la demande d'origine sur la page (copiable
-                                 # dans Directus, réutilisable pour régénérer/ajuster)
-                                 "prompt_ia": (intent or "")[:2000]})
-        r.raise_for_status()
-        page_id = (r.json().get("data") or {}).get("id")
-        blocs = []
-        if intro:
-            blocs.append({"type": "texte", "titre": "", "texte": intro})
-        # Photos : le générateur souverain n'a pas de banque d'images ; s'il en est
-        # demandé, on prépare des EMPLACEMENTS image vides (invisibles tant que non
-        # remplis) que l'admin complète dans l'éditeur. Honnête et prêt à l'emploi.
-        if re.search(r"photo|image|illustr", intent or "", re.I):
-            for _ in range(2):
-                blocs.append({"type": "image", "titre": "", "legende": ""})
-        for kind, cid in comps:
-            blocs.append({"type": kind, "titre": "",
-                          ("carte" if kind == "carte" else "graphique"): cid})
-        for i, b in enumerate(blocs):
-            b.update({"page": page_id, "sort": i + 1, "status": "published", "largeur": "pleine"})
-            rb = await cli.post(f"{base}/items/page_blocs", headers=headers, json=b)
-            rb.raise_for_status()
+    blocs = []
+    if intro:
+        blocs.append({"type": "texte", "titre": "", "texte": intro})
+    # Photos : le générateur souverain n'a pas de banque d'images ; s'il en est demandé,
+    # on prépare des EMPLACEMENTS image vides (invisibles tant que non remplis) que
+    # l'admin complète dans l'éditeur.
+    if re.search(r"photo|image|illustr", intent or "", re.I):
+        for _ in range(2):
+            blocs.append({"type": "image", "titre": "", "legende": ""})
+    for kind, cid in comps:
+        blocs.append({"type": kind, "titre": "",
+                      ("carte" if kind == "carte" else "graphique"): cid})
+    page_id, slug = await cms_create_page(instance, titre, _slugify(titre), blocs, intent)
     log.info("page générée (instance %s) : id=%s slug=%s jeux=%s (découverts=%s) blocs=%s",
              instance, page_id, slug, datasets, discovered, [b["type"] for b in blocs])
     return {"page_id": page_id, "slug": slug, "titre": titre, "datasets": datasets,

@@ -152,8 +152,87 @@ async def _contour_rid(slug):
     return (res["id"] if res else None), pkg.get("title")
 
 
-async def resolve(columns, sample):
-    """Détection + résolution du contour. Renvoie un dict prêt à l'emploi."""
+# Colonnes de contour à ne jamais prendre comme clé de jointure (géométrie brute).
+_GEOMISH = {"wkt", "geometry", "geom", "the_geom", "geojson", "shape", "_geojson"}
+
+
+def _niveau_local_label(title, col):
+    """Libellé lisible d'un niveau local, depuis le titre du jeu de contours
+    (« Contours des quartiers » -> « Quartiers »), à défaut depuis la colonne."""
+    import re
+    t = re.sub(r"(?i)^contours?\s+(des?|du|de\s+la|d')\s*", "", (title or "").strip()).strip()
+    if t:
+        return t[:1].upper() + t[1:]
+    return (col or "territoire").replace("_", " ").capitalize()
+
+
+async def resolve_local(columns, sample, org):
+    """Résolution d'un niveau TERRITORIAL LOCAL (quartier, secteur, IRIS, zonage...) :
+    cherche, dans l'org du jeu, un jeu de contours (GeoJSON) dont une propriété reprend
+    les valeurs d'une colonne du jeu. Permet un portrait/choroplèthe sur un découpage
+    propre à l'instance, comme le fait le tableau de bord territorial manuel.
+
+    Renvoie {code_col, geo_code_col, contour_rid, contour_titre, niveau_label} ou None.
+    Volontairement strict (toutes les valeurs de l'échantillon doivent exister côté
+    contour) pour éviter les faux positifs sur une colonne de mesure."""
+    if not org:
+        return None
+    # valeurs candidates du jeu (colonnes non géométriques, non vides)
+    data_cands = {}
+    for c in columns:
+        if c.lower() in _GEOMISH:
+            continue
+        vals = {str(r.get(c)).strip() for r in sample if r.get(c) not in (None, "")}
+        if len(vals) >= 2:
+            data_cands[c] = vals
+    if not data_cands:
+        return None
+    try:
+        found = await gen._ckan("package_search",
+                                {"fq": f"organization:{org} +res_format:GeoJSON", "rows": 20})
+    except Exception:
+        return None
+    best = None
+    for pkg in found.get("results", []):
+        geo = next((r for r in pkg.get("resources", [])
+                    if (r.get("format") or "").lower() == "geojson"), None)
+        if not geo:
+            continue
+        # propriétés du contour : via le CSV dérivé (datastore, requêtable) de préférence
+        csv = next((r for r in pkg.get("resources", [])
+                    if r.get("datastore_active") and (r.get("format") or "").upper() == "CSV"), None)
+        if not csv:
+            continue
+        try:
+            info = await gen._ckan("datastore_search", {"resource_id": csv["id"], "limit": 1000})
+        except Exception:
+            continue
+        ccols = [f["id"] for f in info.get("fields", []) if f.get("id") != "_id"]
+        recs = info.get("records", [])
+        cvals = {cc: {str(r.get(cc)).strip() for r in recs if r.get(cc) not in (None, "")}
+                 for cc in ccols if cc.lower() not in _GEOMISH}
+        for dc, dv in data_cands.items():
+            for cc, cv in cvals.items():
+                if len(cv) < 2:
+                    continue
+                # toutes les valeurs (échantillon) du jeu doivent exister côté contour
+                if not dv <= cv:
+                    continue
+                score = len(dv) + (5 if dc.lower() == cc.lower() else 0)
+                if not best or score > best["_score"]:
+                    best = {"_score": score, "code_col": dc, "geo_code_col": cc,
+                            "contour_rid": geo["id"], "contour_titre": pkg.get("title"),
+                            "niveau_label": _niveau_local_label(pkg.get("title"), cc)}
+    if best:
+        best.pop("_score", None)
+    return best
+
+
+async def resolve(columns, sample, org=None):
+    """Détection + résolution du contour. Renvoie un dict prêt à l'emploi.
+
+    `org` (org CKAN du jeu) active, si aucun niveau administratif n'est détecté, la
+    résolution d'un niveau LOCAL via un jeu de contours de la même org (voir resolve_local)."""
     level, code_col, joinable = detect_level(columns, sample)
     # geo_code_col = colonne de jointure côté contour (convention : toujours « code »).
     out = {"level": level, "code_col": code_col, "geo_code_col": "code",
@@ -174,7 +253,14 @@ async def resolve(columns, sample):
                 rid, titre = await _contour_rid(slug)
         out["contour_rid"] = rid
         out["contour_titre"] = titre
+    elif org:
+        # aucun niveau administratif : tenter un niveau LOCAL (contour de l'org)
+        loc = await resolve_local(columns, sample, org)
+        if loc:
+            out.update(level="local", code_col=loc["code_col"],
+                       geo_code_col=loc["geo_code_col"], contour_rid=loc["contour_rid"],
+                       contour_titre=loc["contour_titre"], niveau_label=loc["niveau_label"])
     # liaison possible dès qu'on a une colonne de code et un contour : la jointure
     # asymétrique (données ≠ « code ») est désormais gérée par le moteur choroplèthe.
-    out["linkable"] = bool(code_col and out["contour_rid"])
+    out["linkable"] = bool(out["code_col"] and out["contour_rid"])
     return out

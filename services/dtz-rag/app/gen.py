@@ -531,7 +531,7 @@ async def generate_map(instance, dataset, intent=""):
         raise ValueError("aucune ressource tabulaire (datastore) pour ce jeu")
     cols, sample = colinfo
     from . import territory
-    terr = await territory.resolve(cols, sample)
+    terr = await territory.resolve(cols, sample, org=(pkg.get("organization") or {}).get("name"))
     if not terr["linkable"]:
         raise ValueError("liaison territoriale impossible : aucune colonne de code territorial "
                          "(commune/EPCI/département/région) détectée dans ce jeu")
@@ -628,7 +628,7 @@ async def _dataset_geo_kind(dataset):
         if res:
             from . import territory
             try:
-                terr = await territory.resolve(cols, sample)
+                terr = await territory.resolve(cols, sample, org=(pkg.get("organization") or {}).get("name"))
                 if terr.get("linkable"):
                     return pkg, "choro"
             except Exception:
@@ -671,7 +671,7 @@ async def generate_dashboard(instance, dataset, intent=""):
     code_col = keep(niveau_cfg.get("code_colonne")) or (cols[0] if cols else "")
     # Liaison territoriale : détecte le niveau et le contour de référence à joindre.
     from . import territory
-    terr = await territory.resolve(cols, sample)
+    terr = await territory.resolve(cols, sample, org=(pkg.get("organization") or {}).get("name"))
     if terr["code_col"]:
         code_col = terr["code_col"]
     niveau_label = terr["niveau_label"] or niveau_cfg.get("label") or "Territoires"
@@ -948,10 +948,12 @@ async def generate_portrait(instance, dataset, intent="", target_level=None):
             cols, sample = await _columns_of(rid)
             agg_mirror = (rid, f"{pkg.get('title') or dataset} — agrégé par "
                           f"{aggregate.LEVEL_LABEL[target_level]}")
-    terr = await territory.resolve(cols, sample)
+    org = (pkg.get("organization") or {}).get("name")
+    terr = await territory.resolve(cols, sample, org=org)
     if not terr["linkable"]:
-        raise ValueError("portrait impossible : aucun niveau territorial (commune / EPCI / "
-                         "département / région) détecté dans ce jeu")
+        raise ValueError("portrait impossible : aucun niveau territorial détecté (commune / "
+                         "EPCI / département / région, ou un découpage local relié à un jeu "
+                         "de contours de la même organisation)")
     code_col = terr["code_col"]
     row0 = sample[0] if sample else {}
     numeric = [c for c in cols if c != code_col and _isnum(row0.get(c))]
@@ -1070,5 +1072,6 @@ async def generate_portrait(instance, dataset, intent="", target_level=None):
     log.info("portrait généré (instance %s) : page=%s slug=%s carte=%s jauges=%d niveau=%s",
              instance, page_id, slug, carte_id, len(graph_ids), terr["level"])
     return {"page_id": page_id, "slug": slug, "titre": titre, "carte_id": carte_id,
-            "niveau": terr["level"], "indicateurs": [i["libelle"] for i in indics],
+            "niveau": terr.get("niveau_label") or terr["level"],
+            "indicateurs": [i["libelle"] for i in indics],
             "dataset": dataset}

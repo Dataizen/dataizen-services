@@ -545,6 +545,9 @@ _ANSWER_L = {
                 "français, de façon concise et factuelle, en t'appuyant UNIQUEMENT sur les "
                 "extraits fournis. Cite les sources par leur titre. Si l'information ne "
                 "figure pas dans les extraits, dis-le clairement sans inventer."),
+        "identity": ("Ce portail de données ouvertes s'appelle « {name} »{pays}. Lorsqu'on te "
+                     "demande de quel portail, quelle instance ou quel territoire il s'agit, "
+                     "identifie-toi par ce nom et ne prétends jamais l'ignorer."),
         "empty": ("Je n'ai trouvé aucune donnée pertinente dans le catalogue pour cette "
                   "question."),
         "warming": ("L'IA démarre le GPU (première requête, 1 à 2 min). Réessayez dans une "
@@ -562,6 +565,9 @@ _ANSWER_L = {
                 "de forma concisa e factual, apoiando-te UNICAMENTE nos excertos fornecidos. "
                 "Cita as fontes pelo seu título. Se a informação não constar dos excertos, "
                 "di-lo claramente sem inventar."),
+        "identity": ("Este portal de dados abertos chama-se « {name} »{pays}. Quando te "
+                     "perguntarem de que portal, instância ou território se trata, identifica-te "
+                     "por este nome e nunca finjas que o desconheces."),
         "empty": "Não encontrei dados relevantes no catálogo para esta pergunta.",
         "warming": ("A IA está a iniciar o GPU (primeiro pedido, 1 a 2 min). Tente novamente "
                     "dentro de um minuto."),
@@ -578,6 +584,9 @@ _ANSWER_L = {
                 "concisely and factually, relying ONLY on the provided extracts. Cite sources "
                 "by their title. If the information is not in the extracts, say so clearly "
                 "without making anything up."),
+        "identity": ("This open data portal is called « {name} »{pays}. When asked which "
+                     "portal, instance or territory this is, identify yourself by this name "
+                     "and never pretend not to know."),
         "empty": "I found no relevant data in the catalogue for this question.",
         "warming": ("The AI is starting the GPU (first request, 1 to 2 min). Please try again "
                     "in a minute."),
@@ -594,6 +603,9 @@ _ANSWER_L = {
                 "faktuelt, udelukkende baseret på de leverede uddrag. Angiv kilderne ved deres "
                 "titel. Hvis oplysningen ikke findes i uddragene, så sig det tydeligt uden at "
                 "finde på noget."),
+        "identity": ("Denne open data-portal hedder « {name} »{pays}. Når du bliver spurgt, "
+                     "hvilken portal eller instans eller hvilket område det drejer sig om, "
+                     "så identificér dig ved dette navn, og lad aldrig som om du ikke ved det."),
         "empty": "Jeg fandt ingen relevante data i kataloget til dette spørgsmål.",
         "warming": ("AI'en starter GPU'en (første forespørgsel, 1 til 2 min.). Prøv igen om et "
                     "øjeblik."),
@@ -612,9 +624,36 @@ def _answer_lang(query):
     return _ANSWER_L.get(str(lang).lower(), _ANSWER_L["fr"])
 
 
+# Nom du pays localisé, pour situer le portail (facultatif) dans le prompt d'identité.
+_PAYS_NOM = {
+    "fr": {"fr": "France", "pt": "Portugal"},
+    "pt": {"fr": "França", "pt": "Portugal"},
+    "en": {"fr": "France", "pt": "Portugal"},
+    "da": {"fr": "Frankrig", "pt": "Portugal"},
+}
+
+
+def _identity_text(query, L, lang):
+    """Phrase d'identité injectée dans le prompt système : nom affiché du portail
+    (site_name, à défaut le slug d'instance) + pays localisé. Vide si rien de connu."""
+    sc = query.scope or {}
+    name = (sc.get("site_name") or sc.get("instance") or "").strip()
+    if not name:
+        return ""
+    pays_code = (sc.get("pays") or "").strip().lower()
+    pays_nom = _PAYS_NOM.get(lang, _PAYS_NOM["fr"]).get(pays_code, "")
+    pays_suffix = f" ({pays_nom})" if pays_nom else ""
+    return L["identity"].format(name=name, pays=pays_suffix)
+
+
 @app.post("/answer")
 async def answer(query: Query):
     L = _answer_lang(query)
+    lang = str(query.lang or (query.scope or {}).get("lang") or "fr").lower()
+    # Prompt système enrichi de l'identité de l'instance (nom du portail + pays), pour que
+    # l'assistant sache de quel portail / territoire il s'agit au lieu de rester générique.
+    ident = _identity_text(query, L, lang)
+    sys_prompt = L["sys"] + ("\n\n" + ident if ident else "")
     await usage.record_event("assistant", instance=(query.scope or {}).get("instance"),
                              detail=(query.q or "")[:120])
     hits = await _retrieve(query.q, query.scope, query.top_k)
@@ -641,7 +680,7 @@ async def answer(query: Query):
     else:
         user = f"{L['question']} : {query.q}\n\n{L['extraits']} :\n" + fmt(hits)
     try:
-        ans = await llm.chat(L["sys"], user)
+        ans = await llm.chat(sys_prompt, user)
     except llm.GpuWarming:
         return JSONResponse(status_code=503, content={
             "warming": True,
